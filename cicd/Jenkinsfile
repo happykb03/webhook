@@ -1,4 +1,3 @@
-
 /* -------- functions ---------- */
 def notifySlack(STATUS, COLOR) {
 /*
@@ -28,7 +27,7 @@ node {
     stage(stageName) {
         echo "**** START : " + stageName
         
-        git url: "https://github.com/happykbfg/webhook.git", branch: "main", credentialsId: "credential_github"	
+        git url: "https://github.com/happykb03/webhook.git", branch: "main", credentialsId: "credential_github_kb03"	
     }
 
     //-- 환경변수 파일 읽어서 변수값 셋팅
@@ -50,15 +49,19 @@ node {
     def profile = props4jenkins["profile"]
 
     //--- runtime parameters
-    devLang = props4jenkins["devlang"]
-    bastionHome = env.bastion_home_dir
-    imageRegUsername = env.image_registry_username_m804
-    imageRegPassword = env.image_registry_password_m804
-    sshidBastion = env.sshid_bastion
+    def devLang = props4jenkins["devlang"]
+    def bastionIP = props4jenkins["bastionIP"]
+    def bastionUsername = props4jenkins["bastionUsername"]
+    def bastionHome = props4jenkins["bastionHome"]
+ 
+    def ns = props["namespace"]
+    def imageRegistryHost = props4jenkins["imageRegistryHost"]
+    def imageRegistryCredential = props4jenkins["imageRegistryCredential"]
+    def cicdGitURL = props4jenkins["cicdGitURL"]
     //---
 
     try {
-        stageName = "Inspection Code"
+        stageName = "Inspect Code"
         stage(stageName) {
             echo "**** START : " + stageName
             if("${skipStages}".contains(stageName)) {
@@ -81,8 +84,8 @@ node {
         stage(stageName) {
             script {
                 sh "cd ${env.WORKSPACE}"
-                sh "if [ -f ${env.WORKSPACE}/run-cicd/cmd/run-cicd ]; then rm -rf run-cicd; fi"
-                sh "git clone " + env.run_cicd_git_url
+                sh "rm -rf ${env.WORKSPACE}/run-cicd 2>/dev/null"
+                sh "git clone ${cicdGitURL}"
             }
         }
 
@@ -91,26 +94,36 @@ node {
             echo "**** START : " + stageName           
             script {                
                 sh "cd ${env.WORKSPACE}/${baseDir}"
-                sh "${env.WORKSPACE}/run-cicd/cmd/build-image ${imageRegUsername} ${imageRegPassword} . ${devLang} ${env.WORKSPACE}/run-cicd"
+                sh "${env.WORKSPACE}/run-cicd/cmd/build-image . ${devLang} ${env.WORKSPACE}/run-cicd"
             }
         }
+        
+        stageName = "Push image"
+		stage(stageName) {
+			echo "**** START : " + stageName     
+			docker.withRegistry("${imageRegistryHost}", "${imageRegistryCredential}") {
+				sh "docker tag ${imageRegistry}/${imageOrganization}/${imageRepository}:${imageTag} ${imageRegistry}/${imageOrganization}/${imageRepository}:latest"
+				sh "docker push ${imageRegistry}/${imageOrganization}/${imageRepository}:${imageTag}"
+				sh "docker push ${imageRegistry}/${imageOrganization}/${imageRepository}:latest"				
+			}
+		}
 
-        stageName = "Copy CI/CD Scripts to bastion"
+        stageName = "Copy CI/CD Files to bastion"
         stage(stageName) {
-            script {
-                sh "ssh ${sshidBastion} mkdir -p ${bastionHome}/cicd/${imageRepository}"
-                sh "ssh ${sshidBastion} rm -rf ${bastionHome}/run-cicd 2>/dev/null"
-                sh "scp -r ${env.WORKSPACE}/run-cicd ${sshidBastion}:${bastionHome}/"
-                sh "scp -r ${env.WORKSPACE}/cicd ${sshidBastion}:${bastionHome}/cicd/${imageRepository}/"
+            withCredentials([sshUserPrivateKey(credentialsId: "credential_bastion", keyFileVariable: "privatekey_bastion")]) {             
+                sh "ssh -o StrictHostKeyChecking=no -i ${privatekey_bastion} ${bastionUsername}@${bastionIP} mkdir -p ${bastionHome}/cicd/${ns}/${imageRepository}"
+                sh "ssh -i ${privatekey_bastion} ${bastionUsername}@${bastionIP} rm -rf ${bastionHome}/cicd/${ns}/run-cicd 2>/dev/null"
+                sh "scp -i ${privatekey_bastion} -r ${env.WORKSPACE}/run-cicd ${bastionUsername}@${bastionIP}:${bastionHome}/cicd/${ns}/"
+                sh "scp -i ${privatekey_bastion} -r ${env.WORKSPACE}/cicd ${bastionUsername}@${bastionIP}:${bastionHome}/cicd/${ns}/${imageRepository}/"
             }
-        }
+        } 
 
         stageName = "Deploy"
         stage(stageName) {
-            script {
-                sh "ssh ${sshidBastion} mkdir -p ${bastionHome}/cicd/${imageRepository}/deploy"
-                sh "ssh ${sshidBastion} rm -f ${bastionHome}/cicd/${imageRepository}/deploy/* 2>/dev/null"
-                sh "ssh ${sshidBastion} ${bastionHome}/run-cicd/cmd/deploy . ${profile} ${bastionHome}/cicd/${imageRepository}"
+            withCredentials([sshUserPrivateKey(credentialsId: "credential_bastion", keyFileVariable: "privatekey_bastion")]) {  
+                sh "ssh -i ${privatekey_bastion} ${bastionUsername}@${bastionIP} mkdir -p ${bastionHome}/cicd/${ns}/${imageRepository}/deploy"
+                sh "ssh -i ${privatekey_bastion} ${bastionUsername}@${bastionIP} rm -f ${bastionHome}/cicd/${ns}/${imageRepository}/deploy/* 2>/dev/null"
+                sh "ssh -i ${privatekey_bastion} ${bastionUsername}@${bastionIP} ${bastionHome}/cicd/${ns}/run-cicd/cmd/deploy . ${profile} ${bastionHome}/cicd/${ns}/${imageRepository} ${bastionHome}/cicd/${ns}/run-cicd"
             }
         }
         
